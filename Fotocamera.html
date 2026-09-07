@@ -26,7 +26,11 @@
   3) Se posizione ottenuta: chiama indirizzoDaCoordinate con timeout di
      10s. Scaduto il timeout (o errore), si prosegue comunque con le
      sole coordinate grezze al posto dell'indirizzo in chiaro.
-  4) Avvia il video (getUserMedia, fotocamera posteriore).
+  4) Avvia il video (getUserMedia, fotocamera posteriore). Il pulsante
+     di scatto resta disabilitato finché il video non ha davvero un
+     fotogramma valido (videoWidth/videoHeight > 0) — su alcuni browser
+     (Samsung Internet incluso) il flusso può restare "congelato" sul
+     primissimo istante se ci si affida solo ad autoplay/onloadedmetadata.
   5) L'operatore sceglie un overlay guida (Targa/Scudetto post./Campo
      largo/Scudetto ant.) e scatta: il fotogramma va su un canvas, ci si
      disegna sopra la banda (3 righe), si scrivono le coordinate GPS
@@ -501,16 +505,38 @@
 
   // ---------------- VIDEO ----------------
   var streamVideo_ = null;
-    function avviaVideo_() {
+
+  function avviaVideo_() {
+    document.getElementById('bottoneScatta').disabled = true;
     navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false })
       .then(function (stream) {
         streamVideo_ = stream;
         var video = document.getElementById('video');
+        video.muted = true;
         video.srcObject = stream;
-        video.onloadedmetadata = function () {
+
+        function provaAvvio_() {
           video.play().catch(function () { /* alcuni browser rifiutano play() senza interazione: non bloccante */ });
-        };
-        document.getElementById('bottoneScatta').disabled = false;
+        }
+        video.onloadedmetadata = provaAvvio_;
+        video.oncanplay = provaAvvio_;
+
+        // Il pulsante si abilita solo quando il video ha davvero un
+        // fotogramma valido (dimensioni diverse da zero) — altrimenti,
+        // su alcuni browser (Samsung Internet incluso), uno scatto troppo
+        // rapido produce una foto vuota/rotta o lo schermo resta congelato.
+        var tentativi = 0;
+        var timerControllo = setInterval(function () {
+          tentativi++;
+          if (video.videoWidth > 0 && video.videoHeight > 0) {
+            clearInterval(timerControllo);
+            document.getElementById('bottoneScatta').disabled = false;
+          } else if (tentativi > 100) { // ~10 secondi di attesa massima
+            clearInterval(timerControllo);
+            mostraToast_('La fotocamera non risponde: prova a ricaricare la pagina.');
+          }
+        }, 100);
+
         disegnaGuidaCorrente_();
       })
       .catch(function () {
@@ -611,6 +637,10 @@
     }
 
     var video = document.getElementById('video');
+    if (!video.videoWidth || !video.videoHeight) {
+      mostraToast_('Fotocamera non ancora pronta: attendi un istante e riprova.');
+      return;
+    }
     var canvas = document.getElementById('canvasScatto');
     canvas.width = video.videoWidth;
     canvas.height = video.videoHeight;
