@@ -501,11 +501,15 @@
 
   // ---------------- VIDEO ----------------
   var streamVideo_ = null;
-  function avviaVideo_() {
+    function avviaVideo_() {
     navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false })
       .then(function (stream) {
         streamVideo_ = stream;
-        document.getElementById('video').srcObject = stream;
+        var video = document.getElementById('video');
+        video.srcObject = stream;
+        video.onloadedmetadata = function () {
+          video.play().catch(function () { /* alcuni browser rifiutano play() senza interazione: non bloccante */ });
+        };
         document.getElementById('bottoneScatta').disabled = false;
         disegnaGuidaCorrente_();
       })
