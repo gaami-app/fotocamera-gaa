@@ -31,18 +31,26 @@
      fotogramma valido (videoWidth/videoHeight > 0) — su alcuni browser
      (Samsung Internet incluso) il flusso può restare "congelato" sul
      primissimo istante se ci si affida solo ad autoplay/onloadedmetadata.
-  5) L'operatore sceglie un overlay guida (Targa/Scudetto post./Campo
-     largo/Scudetto ant.) e scatta: il fotogramma va su un canvas, ci si
-     disegna sopra la banda (3 righe), si scrivono le coordinate GPS
-     (e l'indirizzo se disponibile) nell'EXIF (piexif.js), poi la foto
-     viene caricata subito sul backend (cartella temporanea).
-  6) Ogni foto occupa uno slot fisso per tipo (Targa=1, Scudetto
+  5) Zoom digitale (pizzico a due dita sul video, o pulsanti +/-): scala
+     visivamente il video (CSS transform) e, allo scatto, ritaglia dal
+     fotogramma reale solo la porzione centrale corrispondente allo zoom
+     applicato — non è zoom ottico, è un ritaglio+ingrandimento software,
+     universale su qualsiasi dispositivo/browser. Torna sempre a 1x
+     quando si cambia tipo di overlay (Targa/Scudetto/Campo largo);
+     resta invariato se si scattano più foto di fila con lo stesso tipo.
+  6) L'operatore sceglie un overlay guida (Targa/Scudetto post./Campo
+     largo/Scudetto ant.) e scatta: il fotogramma (ritagliato secondo lo
+     zoom) va su un canvas, ci si disegna sopra la banda (3 righe), si
+     scrivono le coordinate GPS (e l'indirizzo se disponibile) nell'EXIF
+     (piexif.js), poi la foto viene caricata subito sul backend
+     (cartella temporanea).
+  7) Ogni foto occupa uno slot fisso per tipo (Targa=1, Scudetto
      post.=2, Campo largo=3/4, Scudetto ant.=5); se lo slot di casa è
      occupato, si cerca il primo libero partendo dal 5 e scendendo.
-  7) Schermata di revisione: griglia degli slot, X per rimuovere (solo
+  8) Schermata di revisione: griglia degli slot, X per rimuovere (solo
      lato client — il file resta nella cartella temporanea, ripulito dal
      trigger automatico entro 24h se non viene mai salvato).
-  8) "Conferma e torna al modulo": redirect all'URL "ritorno" (che
+  9) "Conferma e torna al modulo": redirect all'URL "ritorno" (che
      contiene già ?fotoSessione=... per il recupero lato InviaSegnalazione).
 
   Semplificazione nota: la rimozione di una foto in fase di revisione è
@@ -74,8 +82,8 @@
 
   /* ---------- SCHERMO 1: FOTOCAMERA ---------- */
   #schermoCamera { position: fixed; inset: 0; background: #000; display: flex; flex-direction: column; }
-  .area-video { position: relative; flex: 1; overflow: hidden; background: #000; }
-  #video { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .area-video { position: relative; flex: 1; overflow: hidden; background: #000; touch-action: none; }
+  #video { width: 100%; height: 100%; object-fit: cover; display: block; transform-origin: center center; }
   #canvasScatto { display: none; }
 
   .barra-top {
@@ -106,6 +114,22 @@
     position: absolute; bottom: 10%; right: 4%; z-index: 3; background: rgba(0,0,0,0.55);
     color: #fff; font-size: 11px; padding: 6px 8px; border-radius: 4px; text-align: right;
     max-width: 60%; line-height: 1.4;
+  }
+
+  /* ---------- CONTROLLO ZOOM ---------- */
+  .controllo-zoom {
+    position: absolute; right: 10px; top: 50%; transform: translateY(-50%); z-index: 4;
+    display: flex; flex-direction: column; align-items: center; gap: 8px;
+  }
+  .btn-zoom {
+    width: 38px; height: 38px; border-radius: 50%; background: rgba(20,20,20,0.6);
+    border: 1px solid rgba(255,255,255,0.25); color: #fff; font-size: 19px; font-weight: 600;
+    display: flex; align-items: center; justify-content: center; padding: 0; line-height: 1;
+  }
+  .btn-zoom:active { background: rgba(212,175,55,0.5); }
+  .zoom-valore {
+    background: rgba(20,20,20,0.6); color: #D4AF37; font-size: 11px; font-weight: 700;
+    padding: 3px 6px; border-radius: 10px; min-width: 34px; text-align: center;
   }
 
   .striscia-slot { display: flex; gap: 6px; padding: 8px 12px; background: #000; z-index: 5; overflow-x: auto; }
@@ -207,7 +231,7 @@
 
   <!-- ================= SCHERMO CAMERA ================= -->
   <div id="schermoCamera">
-    <div class="area-video">
+    <div class="area-video" id="areaVideo">
       <video id="video" autoplay playsinline muted></video>
       <canvas id="canvasScatto"></canvas>
 
@@ -223,6 +247,12 @@
       <div class="etichetta-guida" id="etichettaGuida"></div>
       <div class="guida-overlay" id="guidaOverlay"></div>
       <div class="banda-anteprima" id="bandaAnteprima" style="display:none;"></div>
+
+      <div class="controllo-zoom">
+        <button type="button" class="btn-zoom" onclick="modificaZoom_(0.5)">+</button>
+        <span class="zoom-valore" id="zoomValore">1.0x</span>
+        <button type="button" class="btn-zoom" onclick="modificaZoom_(-0.5)">−</button>
+      </div>
     </div>
 
     <div class="striscia-slot" id="strisciaSlot"></div>
@@ -345,15 +375,13 @@
   var slotFoto_ = [null, null, null, null, null]; // ognuno: null oppure { tipo, blobUrl, idFileTemp, caricamentoInCorso }
 
   function trovaSlotPerTipo_(tipo) {
-    // 1) slot "di casa" libero per quel tipo
     for (var i = 0; i < CONFIG_SLOT_.length; i++) {
       if (CONFIG_SLOT_[i].tipoCasa === tipo && !slotFoto_[i]) return i;
     }
-    // 2) altrimenti primo libero partendo dal 5 e scendendo verso l'1
     for (var j = CONFIG_SLOT_.length - 1; j >= 0; j--) {
       if (!slotFoto_[j]) return j;
     }
-    return -1; // tutti pieni (max 5 raggiunto)
+    return -1;
   }
 
   function contaFotoScattate_() {
@@ -384,6 +412,58 @@
     aggiornaContatore_();
   }
 
+  // ---------------- ZOOM DIGITALE ----------------
+  var ZOOM_MIN_ = 1;
+  var ZOOM_MAX_ = 4;
+  var livelloZoom_ = 1;
+
+  function applicaZoomVisivo_() {
+    document.getElementById('video').style.transform = 'scale(' + livelloZoom_ + ')';
+    document.getElementById('zoomValore').textContent = livelloZoom_.toFixed(1) + 'x';
+  }
+
+  function modificaZoom_(delta) {
+    livelloZoom_ = Math.min(ZOOM_MAX_, Math.max(ZOOM_MIN_, +(livelloZoom_ + delta).toFixed(2)));
+    applicaZoomVisivo_();
+  }
+
+  function azzeraZoom_() {
+    livelloZoom_ = 1;
+    applicaZoomVisivo_();
+  }
+
+  // Pizzico a due dita sull'area video.
+  (function () {
+    var areaVideo = document.getElementById('areaVideo');
+    var distanzaIniziale_ = null;
+    var zoomIniziale_ = 1;
+
+    areaVideo.addEventListener('touchstart', function (e) {
+      if (e.touches.length === 2) {
+        var dx = e.touches[0].clientX - e.touches[1].clientX;
+        var dy = e.touches[0].clientY - e.touches[1].clientY;
+        distanzaIniziale_ = Math.sqrt(dx * dx + dy * dy);
+        zoomIniziale_ = livelloZoom_;
+      }
+    }, { passive: true });
+
+    areaVideo.addEventListener('touchmove', function (e) {
+      if (e.touches.length === 2 && distanzaIniziale_) {
+        e.preventDefault();
+        var dx = e.touches[0].clientX - e.touches[1].clientX;
+        var dy = e.touches[0].clientY - e.touches[1].clientY;
+        var nuovaDistanza = Math.sqrt(dx * dx + dy * dy);
+        var fattore = nuovaDistanza / distanzaIniziale_;
+        livelloZoom_ = Math.min(ZOOM_MAX_, Math.max(ZOOM_MIN_, +(zoomIniziale_ * fattore).toFixed(2)));
+        applicaZoomVisivo_();
+      }
+    }, { passive: false });
+
+    areaVideo.addEventListener('touchend', function (e) {
+      if (e.touches.length < 2) distanzaIniziale_ = null;
+    });
+  })();
+
   // ---------------- SELEZIONE OVERLAY GUIDA ----------------
   var tipoOverlayCorrente_ = 'targa';
   var GUIDE_ = {
@@ -398,6 +478,7 @@
     document.querySelectorAll('.icona-overlay').forEach(function (btn) {
       btn.classList.toggle('attivo', btn.getAttribute('data-tipo') === tipo);
     });
+    azzeraZoom_(); // cambio overlay -> zoom torna a 1x, come deciso
     disegnaGuidaCorrente_();
   }
 
@@ -447,7 +528,7 @@
     var timer = setTimeout(function () {
       scaduto = true;
       nascondiAttesa_();
-      indirizzoCorrente_ = { lat: lat, lng: lng, riga1: '', riga2: '' }; // fallback: solo coordinate (in EXIF)
+      indirizzoCorrente_ = { lat: lat, lng: lng, riga1: '', riga2: '' };
       avviaVideo_();
     }, TIMEOUT_GEOCODING_MS_);
 
@@ -473,7 +554,7 @@
   }
 
   function continuaSenzaPosizione_() {
-    indirizzoCorrente_ = null; // niente GPS, niente indirizzo: solo data/ora sulla banda
+    indirizzoCorrente_ = null;
     mostraSchermo_('schermoCamera');
     avviaVideo_();
   }
@@ -521,22 +602,19 @@
         video.onloadedmetadata = provaAvvio_;
         video.oncanplay = provaAvvio_;
 
-        // Il pulsante si abilita solo quando il video ha davvero un
-        // fotogramma valido (dimensioni diverse da zero) — altrimenti,
-        // su alcuni browser (Samsung Internet incluso), uno scatto troppo
-        // rapido produce una foto vuota/rotta o lo schermo resta congelato.
         var tentativi = 0;
         var timerControllo = setInterval(function () {
           tentativi++;
           if (video.videoWidth > 0 && video.videoHeight > 0) {
             clearInterval(timerControllo);
             document.getElementById('bottoneScatta').disabled = false;
-          } else if (tentativi > 100) { // ~10 secondi di attesa massima
+          } else if (tentativi > 100) {
             clearInterval(timerControllo);
             mostraToast_('La fotocamera non risponde: prova a ricaricare la pagina.');
           }
         }, 100);
 
+        azzeraZoom_();
         disegnaGuidaCorrente_();
       })
       .catch(function () {
@@ -562,7 +640,6 @@
         righe.push(indirizzoCorrente_.riga1);
         if (indirizzoCorrente_.riga2) righe.push(indirizzoCorrente_.riga2);
       } else {
-        // Timeout OpenCage: coordinate grezze al posto dell'indirizzo.
         righe.push(indirizzoCorrente_.lat.toFixed(5) + ', ' + indirizzoCorrente_.lng.toFixed(5));
       }
     }
@@ -606,7 +683,7 @@
   }
 
   function scriviExif_(dataUrl, dataScatto) {
-    if (!indirizzoCorrente_) return dataUrl; // niente GPS: nessun EXIF da scrivere
+    if (!indirizzoCorrente_) return dataUrl;
     try {
       var GPS = piexif.GPSIFD;
       var gpsData = {};
@@ -624,7 +701,7 @@
       var exifBytes = piexif.dump(exifObj);
       return piexif.insert(exifBytes, dataUrl);
     } catch (e) {
-      return dataUrl; // se la scrittura EXIF fallisce, la foto resta comunque valida
+      return dataUrl;
     }
   }
 
@@ -641,11 +718,24 @@
       mostraToast_('Fotocamera non ancora pronta: attendi un istante e riprova.');
       return;
     }
+
+    // Ritaglio zoom: dal fotogramma reale prendiamo solo la porzione
+    // centrale corrispondente al livello di zoom visivo applicato, così
+    // la foto scattata corrisponde a quello che si vedeva ingrandito.
+    var larghezzaRitaglio = video.videoWidth / livelloZoom_;
+    var altezzaRitaglio = video.videoHeight / livelloZoom_;
+    var origineX = (video.videoWidth - larghezzaRitaglio) / 2;
+    var origineY = (video.videoHeight - altezzaRitaglio) / 2;
+
     var canvas = document.getElementById('canvasScatto');
-    canvas.width = video.videoWidth;
-    canvas.height = video.videoHeight;
+    canvas.width = larghezzaRitaglio;
+    canvas.height = altezzaRitaglio;
     var ctx = canvas.getContext('2d');
-    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    ctx.drawImage(
+      video,
+      origineX, origineY, larghezzaRitaglio, altezzaRitaglio,
+      0, 0, larghezzaRitaglio, altezzaRitaglio
+    );
 
     var adesso = new Date();
     disegnaBanda_(ctx, canvas.width, canvas.height, righeBanda_(adesso));
@@ -671,7 +761,6 @@
     renderizzaStrisciaSlot_();
     mostraToast_('Foto scattata, caricamento in corso...');
 
-    // Carica subito sul backend, in background (l'operatore può continuare a scattare).
     chiamaApi_('caricaFotoTemp', {
       idSessione: ID_SESSIONE_, base64: base64, mimeType: mimeType,
       nome: slotFoto_[indiceSlot].nome, dataScatto: slotFoto_[indiceSlot].dataScatto, luogoTesto: luogoTesto
@@ -682,9 +771,6 @@
       }
     }).catch(function (errore) {
       mostraToast_('Errore caricamento foto: ' + errore.message);
-      // La foto resta visibile localmente ma senza idFileTemp: se l'operatore
-      // prova a confermare prima che l'upload sia andato a buon fine, glielo
-      // segnaliamo in confermaEInvia_().
     });
   }
 
@@ -756,8 +842,6 @@
     var falliti = slotFoto_.some(function (f) { return f && !f.idFileTemp; });
     if (falliti) {
       mostraToast_('Alcune foto non sono state caricate correttamente: riprovo...');
-      // Semplice ritentativo non implementato qui per non appesantire il file:
-      // in pratica, capita raramente (solo con connessione assente durante lo scatto).
     }
     window.location.href = URL_RITORNO_;
   }
