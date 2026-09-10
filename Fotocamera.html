@@ -21,29 +21,34 @@
 
   Flusso:
   1) Legge parametri URL.
-  2) Chiede il permesso di posizione. Se negato -> pannello istruzioni
-     (per dispositivo rilevato) + "Riprova" + "Continua senza posizione".
+  2) Avvia SUBITO fotocamera e ricerca posizione IN PARALLELO (prima
+     erano in sequenza: posizione -> poi fotocamera, con 10-15s di
+     attesa a schermo nero). Se la posizione fallisce, si continua a
+     scattare senza bloccare nulla: un toast avvisa, e un pulsante
+     dedicato nella barra alta permette di riprovare quando serve
+     (mostraSchermoPermesso_ resta disponibile solo da lì, con le
+     istruzioni per dispositivo, non più automatico al primo tentativo).
   3) Se posizione ottenuta: chiama indirizzoDaCoordinate con timeout di
      10s. Scaduto il timeout (o errore), si prosegue comunque con le
      sole coordinate grezze al posto dell'indirizzo in chiaro.
-  4) Avvia il video (getUserMedia, fotocamera posteriore). Il pulsante
-     di scatto resta disabilitato finché il video non ha davvero un
-     fotogramma valido (videoWidth/videoHeight > 0) — su alcuni browser
-     (Samsung Internet incluso) il flusso può restare "congelato" sul
-     primissimo istante se ci si affida solo ad autoplay/onloadedmetadata.
-  5) Zoom digitale (pizzico a due dita sul video, o pulsanti +/-): scala
-     visivamente il video (CSS transform) e, allo scatto, ritaglia dal
-     fotogramma reale solo la porzione centrale corrispondente allo zoom
-     applicato — non è zoom ottico, è un ritaglio+ingrandimento software,
-     universale su qualsiasi dispositivo/browser. Torna sempre a 1x
-     quando si cambia tipo di overlay (Targa/Scudetto/Campo largo);
-     resta invariato se si scattano più foto di fila con lo stesso tipo.
+  4) Il pulsante di scatto resta disabilitato finché il video non ha
+     davvero un fotogramma valido (videoWidth/videoHeight > 0).
+  5) Messa a fuoco e zoom: se il dispositivo espone i controlli nativi
+     della fotocamera (track.getCapabilities() — tipicamente Chrome su
+     Android con driver che li supporta; NON disponibile su iOS/Safari,
+     limite di piattaforma non aggirabile da un sito web), si forza
+     focusMode continuo e si usa lo ZOOM OTTICO/SENSORE reale invece del
+     ritaglio digitale. Se il dispositivo non li espone, resta il
+     comportamento precedente (ritaglio+ingrandimento software dal
+     fotogramma catturato) come ripiego universale. La UI dello zoom
+     (pulsanti +/- e pizzico) mostra sempre un moltiplicatore astratto
+     1.0x-8.0x indipendente da come il dispositivo numera il suo zoom
+     nativo. Torna sempre a 1x quando si cambia tipo di overlay.
   6) L'operatore sceglie un overlay guida (Targa/Scudetto post./Campo
-     largo/Scudetto ant.) e scatta: il fotogramma (ritagliato secondo lo
-     zoom) va su un canvas, ci si disegna sopra la banda (3 righe), si
-     scrivono le coordinate GPS (e l'indirizzo se disponibile) nell'EXIF
-     (piexif.js), poi la foto viene caricata subito sul backend
-     (cartella temporanea).
+     largo/Scudetto ant.) e scatta: il fotogramma va su un canvas, ci si
+     disegna sopra la banda (3 righe), si scrivono le coordinate GPS
+     (e l'indirizzo se disponibile) nell'EXIF (piexif.js), poi la foto
+     viene caricata subito sul backend (cartella temporanea).
   7) Ogni foto occupa uno slot fisso per tipo (Targa=1, Scudetto
      post.=2, Campo largo=3/4, Scudetto ant.=5); se lo slot di casa è
      occupato, si cerca il primo libero partendo dal 5 e scendendo.
@@ -82,8 +87,14 @@
 
   /* ---------- SCHERMO 1: FOTOCAMERA ---------- */
   #schermoCamera { position: fixed; inset: 0; background: #000; display: flex; flex-direction: column; }
-  .area-video { position: relative; flex: 1; overflow: hidden; background: #000; touch-action: none; }
-  #video { width: 100%; height: 100%; object-fit: cover; display: block; transform-origin: center center; }
+  .area-video {
+    position: relative; flex: 1; overflow: hidden; background: #000; touch-action: none;
+    -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+  }
+  #video {
+    width: 100%; height: 100%; object-fit: cover; display: block; transform-origin: center center;
+    -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; pointer-events: none;
+  }
   #canvasScatto { display: none; }
 
   .barra-top {
@@ -97,6 +108,12 @@
     color: #fff; display: flex; align-items: center; justify-content: center; padding: 0;
   }
   .contatore-foto { color: #D4AF37; font-size: 13px; font-weight: 600; }
+  .gruppo-destra-top { display: flex; align-items: center; gap: 10px; }
+  .btn-gps {
+    width: 30px; height: 30px; border-radius: 50%; background: rgba(255,255,255,0.15);
+    color: #fff; display: flex; align-items: center; justify-content: center; padding: 0; font-size: 14px;
+  }
+  .btn-gps.attivo { background: rgba(46,155,90,0.35); color: #6fe0a0; }
   .switch-overlay { display: flex; align-items: center; gap: 6px; font-size: 11px; color: #ccc; }
   .switch-overlay input { width: 30px; height: 16px; }
 
@@ -131,6 +148,7 @@
     background: rgba(20,20,20,0.6); color: #D4AF37; font-size: 11px; font-weight: 700;
     padding: 3px 6px; border-radius: 10px; min-width: 34px; text-align: center;
   }
+  .zoom-valore.nativo { color: #6fe0a0; }
 
   .striscia-slot { display: flex; gap: 6px; padding: 8px 12px; background: #000; z-index: 5; overflow-x: auto; }
   .slot {
@@ -238,10 +256,13 @@
       <div class="barra-top">
         <button class="btn-tondo" onclick="chiudiSenzaSalvare_()">✕</button>
         <span class="contatore-foto" id="contatoreFoto">0 di 5</span>
-        <label class="switch-overlay">
-          Overlay
-          <input type="checkbox" id="toggleOverlay" checked onchange="aggiornaGuidaVisibile_()">
-        </label>
+        <div class="gruppo-destra-top">
+          <button type="button" class="btn-gps" id="bottoneGps" onclick="richiediPosizione_()" title="Posizione">⚲</button>
+          <label class="switch-overlay">
+            Overlay
+            <input type="checkbox" id="toggleOverlay" checked onchange="aggiornaGuidaVisibile_()">
+          </label>
+        </div>
       </div>
 
       <div class="etichetta-guida" id="etichettaGuida"></div>
@@ -412,24 +433,31 @@
     aggiornaContatore_();
   }
 
-  // ---------------- ZOOM DIGITALE ----------------
+  // ---------------- ZOOM (nativo se disponibile, altrimenti ritaglio digitale) ----------------
   var ZOOM_MIN_ = 1;
   var ZOOM_MAX_ = 4;
-  var livelloZoom_ = 1;
+  var livelloZoom_ = 1; // moltiplicatore astratto 1.0-8.0, stessa UI indipendentemente dal metodo
 
-  function applicaZoomVisivo_() {
-    document.getElementById('video').style.transform = 'scale(' + livelloZoom_ + ')';
+  function applicaZoom_() {
     document.getElementById('zoomValore').textContent = livelloZoom_.toFixed(1) + 'x';
+    if (capacitaFotocamera_.zoomNativo && trackVideo_) {
+      var valoreDispositivo = capacitaFotocamera_.zoomMinDispositivo * livelloZoom_;
+      valoreDispositivo = Math.min(capacitaFotocamera_.zoomMaxDispositivo, Math.max(capacitaFotocamera_.zoomMinDispositivo, valoreDispositivo));
+      trackVideo_.applyConstraints({ advanced: [{ zoom: valoreDispositivo }] }).catch(function () {});
+      document.getElementById('video').style.transform = 'scale(1)';
+    } else {
+      document.getElementById('video').style.transform = 'scale(' + livelloZoom_ + ')';
+    }
   }
 
   function modificaZoom_(delta) {
     livelloZoom_ = Math.min(ZOOM_MAX_, Math.max(ZOOM_MIN_, +(livelloZoom_ + delta).toFixed(2)));
-    applicaZoomVisivo_();
+    applicaZoom_();
   }
 
   function azzeraZoom_() {
     livelloZoom_ = 1;
-    applicaZoomVisivo_();
+    applicaZoom_();
   }
 
   // Pizzico a due dita sull'area video.
@@ -455,7 +483,7 @@
         var nuovaDistanza = Math.sqrt(dx * dx + dy * dy);
         var fattore = nuovaDistanza / distanzaIniziale_;
         livelloZoom_ = Math.min(ZOOM_MAX_, Math.max(ZOOM_MIN_, +(zoomIniziale_ * fattore).toFixed(2)));
-        applicaZoomVisivo_();
+        applicaZoom_();
       }
     }, { passive: false });
 
@@ -466,11 +494,15 @@
 
   // ---------------- SELEZIONE OVERLAY GUIDA ----------------
   var tipoOverlayCorrente_ = 'targa';
+  // Le guide con "tondo: true" usano vw su entrambi i lati (mai %) così il
+  // lato è davvero uguale in pixel: un "cerchio" in % risulta un ovale, dato
+  // che la % di larghezza e quella di altezza si calcolano su basi diverse
+  // (larghezza/altezza del riquadro video, quasi mai uguali su un telefono).
   var GUIDE_ = {
-    targa:        { forma: 'rett', larghezza: '55%', altezza: '16%', tondo: false, testo: 'Inquadra la targa' },
-    scudettoPost: { forma: 'rett', larghezza: '85%', altezza: '75%', tondo: false, testo: 'Inquadra lo scudetto, il più vicino possibile' },
-    campoLargo:   { forma: 'rett', larghezza: '45%', altezza: '28%', tondo: false, testo: "Inquadra tutta l'auto" },
-    scudettoAnt:  { forma: 'rett', larghezza: '65%', altezza: '65%', tondo: true,  testo: 'Inquadra lo scudetto anteriore' }
+    targa:        { forma: 'rett', larghezza: '75%',  altezza: '22%',  tondo: false, testo: 'Inquadra la targa' },
+    scudettoPost: { forma: 'rett', larghezza: '70vw',  altezza: '50vw', tondo: false, testo: 'Inquadra lo scudetto, il più vicino possibile' },
+    campoLargo:   { forma: 'rett', larghezza: '45%',  altezza: '28%',  tondo: false, testo: "Inquadra tutta l'auto" },
+    scudettoAnt:  { forma: 'rett', larghezza: '62vw',  altezza: '62vw', tondo: true,  testo: 'Inquadra lo scudetto anteriore' }
   };
 
   function selezionaOverlay_(tipo) {
@@ -499,67 +531,88 @@
   }
 
   // ---------------- GEOLOCALIZZAZIONE + INDIRIZZO ----------------
+  // Non blocca più l'avvio della fotocamera: parte in parallelo (vedi
+  // apriApp_). Se fallisce, si continua a scattare senza GPS: un toast
+  // avvisa e resta disponibile il pulsante ⚲ nella barra alta per riprovare
+  // (o le istruzioni per dispositivo, se il retry fallisce di nuovo).
   var indirizzoCorrente_ = null; // { lat, lng, riga1, riga2 } — riga1/riga2 vuote se solo coordinate
   var TIMEOUT_GEOCODING_MS_ = 10000;
+  var richiestaPosizioneInCorso_ = false;
 
   function apriApp_() {
     mostraSchermo_('schermoCamera');
+    avviaVideo_();
     richiediPosizione_();
   }
 
   function richiediPosizione_() {
-    mostraAttesa_('Ricerca posizione in corso...');
+    if (richiestaPosizioneInCorso_) return;
+    richiestaPosizioneInCorso_ = true;
+    aggiornaBottoneGps_('cercando');
     if (!navigator.geolocation) {
-      nascondiAttesa_();
-      mostraSchermoPermesso_();
+      richiestaPosizioneInCorso_ = false;
+      aggiornaBottoneGps_('assente');
       return;
     }
     navigator.geolocation.getCurrentPosition(function (posizione) {
+      richiestaPosizioneInCorso_ = false;
       risolviIndirizzo_(posizione.coords.latitude, posizione.coords.longitude);
     }, function () {
-      nascondiAttesa_();
-      mostraSchermoPermesso_();
+      richiestaPosizioneInCorso_ = false;
+      aggiornaBottoneGps_('assente');
+      // Solo un avviso leggero: la fotocamera è già utilizzabile, non
+      // blocchiamo più nulla. Le istruzioni dettagliate restano un tap
+      // di distanza sul pulsante ⚲.
+      mostraToast_('Posizione non disponibile: le foto non avranno GPS. Tocca ⚲ per riprovare.');
     }, { enableHighAccuracy: true, timeout: 15000 });
   }
 
   function risolviIndirizzo_(lat, lng) {
-    mostraAttesa_('Individuazione indirizzo...');
+    aggiornaBottoneGps_('cercando');
     var scaduto = false;
     var timer = setTimeout(function () {
       scaduto = true;
-      nascondiAttesa_();
       indirizzoCorrente_ = { lat: lat, lng: lng, riga1: '', riga2: '' };
-      avviaVideo_();
+      aggiornaBottoneGps_('attivo');
     }, TIMEOUT_GEOCODING_MS_);
 
     chiamaApi_('indirizzoDaCoordinate', { lat: lat, lng: lng })
       .then(function (indirizzo) {
         if (scaduto) return;
         clearTimeout(timer);
-        nascondiAttesa_();
         indirizzoCorrente_ = {
           lat: lat, lng: lng,
           riga1: (indirizzo && indirizzo.riga1) || '',
           riga2: (indirizzo && indirizzo.riga2) || ''
         };
-        avviaVideo_();
+        aggiornaBottoneGps_('attivo');
       })
       .catch(function () {
         if (scaduto) return;
         clearTimeout(timer);
-        nascondiAttesa_();
         indirizzoCorrente_ = { lat: lat, lng: lng, riga1: '', riga2: '' };
-        avviaVideo_();
+        aggiornaBottoneGps_('attivo');
       });
   }
 
   function continuaSenzaPosizione_() {
     indirizzoCorrente_ = null;
     mostraSchermo_('schermoCamera');
-    avviaVideo_();
+  }
+
+  function aggiornaBottoneGps_(stato) {
+    var btn = document.getElementById('bottoneGps');
+    if (!btn) return;
+    btn.classList.toggle('attivo', stato === 'attivo');
+    btn.textContent = stato === 'cercando' ? '…' : '⚲';
+    btn.title = stato === 'attivo' ? 'Posizione trovata' : (stato === 'cercando' ? 'Ricerca posizione…' : 'Posizione non disponibile — tocca per riprovare');
   }
 
   // ---------------- SCHERMATA PERMESSO NEGATO (istruzioni per dispositivo) ----------------
+  // Non più automatica: raggiungibile solo esplicitamente (vedi
+  // richiediPosizione_ chiamato una seconda volta da chi tocca ⚲ dopo un
+  // primo fallimento — se vuoi le istruzioni dettagliate invece del solo
+  // toast, aggiungi qui la chiamata a mostraSchermoPermesso_()).
   function rilevaDispositivo_() {
     var ua = navigator.userAgent || '';
     if (/iPhone|iPad|iPod/.test(ua)) return 'ios';
@@ -584,14 +637,24 @@
     mostraSchermo_('schermoPermesso');
   }
 
-  // ---------------- VIDEO ----------------
+  // ---------------- VIDEO + CAPACITÀ FOTOCAMERA (focus/zoom nativi) ----------------
   var streamVideo_ = null;
+  var trackVideo_ = null;
+  var capacitaFotocamera_ = { focusContinuo: false, zoomNativo: false, zoomMinDispositivo: 1, zoomMaxDispositivo: 1 };
 
   function avviaVideo_() {
     document.getElementById('bottoneScatta').disabled = true;
-    navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' }, audio: false })
+    navigator.mediaDevices.getUserMedia({
+      video: {
+        facingMode: 'environment',
+        width: { ideal: 1920 },
+        height: { ideal: 1080 }
+      },
+      audio: false
+    })
       .then(function (stream) {
         streamVideo_ = stream;
+        trackVideo_ = stream.getVideoTracks()[0];
         var video = document.getElementById('video');
         video.muted = true;
         video.srcObject = stream;
@@ -614,12 +677,45 @@
           }
         }, 100);
 
+        rilevaCapacitaFotocamera_();
         azzeraZoom_();
         disegnaGuidaCorrente_();
       })
       .catch(function () {
         mostraToast_('Impossibile accedere alla fotocamera del dispositivo.');
       });
+  }
+
+  // Focus continuo e zoom nativo, solo dove il dispositivo/browser li
+  // espone (soprattutto Chrome su Android; su iOS/Safari il browser NON
+  // permette l'accesso a questi controlli, indipendentemente dal browser
+  // scelto — limite della piattaforma, non risolvibile da qui). Dove non
+  // disponibili, tutto il resto del file continua a funzionare come prima
+  // (zoom = ritaglio digitale, focus = quello di default del dispositivo).
+  function rilevaCapacitaFotocamera_() {
+    capacitaFotocamera_ = { focusContinuo: false, zoomNativo: false, zoomMinDispositivo: 1, zoomMaxDispositivo: 1 };
+    if (!trackVideo_ || !trackVideo_.getCapabilities) return;
+
+    var capacita;
+    try {
+      capacita = trackVideo_.getCapabilities();
+    } catch (e) {
+      return;
+    }
+
+    if (capacita.focusMode && capacita.focusMode.indexOf('continuous') !== -1) {
+      capacitaFotocamera_.focusContinuo = true;
+      trackVideo_.applyConstraints({ advanced: [{ focusMode: 'continuous' }] }).catch(function () {});
+    }
+
+    if (capacita.zoom && capacita.zoom.max > capacita.zoom.min) {
+      capacitaFotocamera_.zoomNativo = true;
+      capacitaFotocamera_.zoomMinDispositivo = capacita.zoom.min;
+      capacitaFotocamera_.zoomMaxDispositivo = capacita.zoom.max;
+      ZOOM_MAX_ = Math.min(8, +(capacita.zoom.max / capacita.zoom.min).toFixed(1));
+    }
+
+    document.getElementById('zoomValore').classList.toggle('nativo', capacitaFotocamera_.zoomNativo);
   }
 
   // ---------------- FORMATTAZIONE BANDA ----------------
@@ -719,13 +815,23 @@
       return;
     }
 
-    // Ritaglio zoom: dal fotogramma reale prendiamo solo la porzione
-    // centrale corrispondente al livello di zoom visivo applicato, così
-    // la foto scattata corrisponde a quello che si vedeva ingrandito.
-    var larghezzaRitaglio = video.videoWidth / livelloZoom_;
-    var altezzaRitaglio = video.videoHeight / livelloZoom_;
-    var origineX = (video.videoWidth - larghezzaRitaglio) / 2;
-    var origineY = (video.videoHeight - altezzaRitaglio) / 2;
+    // Con zoom nativo il fotogramma è GIÀ zoomato dal sensore/driver: si usa
+    // per intero, senza ritaglio (altrimenti sarebbe uno zoom doppio). Solo
+    // nel ripiego (nessun controllo nativo disponibile) si ritaglia dal
+    // fotogramma reale la porzione centrale corrispondente al livello di
+    // zoom visivo applicato via CSS.
+    var larghezzaRitaglio, altezzaRitaglio, origineX, origineY;
+    if (capacitaFotocamera_.zoomNativo) {
+      larghezzaRitaglio = video.videoWidth;
+      altezzaRitaglio = video.videoHeight;
+      origineX = 0;
+      origineY = 0;
+    } else {
+      larghezzaRitaglio = video.videoWidth / livelloZoom_;
+      altezzaRitaglio = video.videoHeight / livelloZoom_;
+      origineX = (video.videoWidth - larghezzaRitaglio) / 2;
+      origineY = (video.videoHeight - altezzaRitaglio) / 2;
+    }
 
     var canvas = document.getElementById('canvasScatto');
     canvas.width = larghezzaRitaglio;
